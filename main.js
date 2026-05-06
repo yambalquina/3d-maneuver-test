@@ -1,272 +1,174 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-const uiLoading = document.getElementById('loading');
-const uiError = document.getElementById('error-log');
-
+// --- 初期設定 ---
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x8DB2D6);
-scene.fog = new THREE.FogExp2(0x8DB2D6, 0.003);
+scene.background = new THREE.Color(0x8ed0ff);
+scene.fog = new THREE.Fog(0xbfe6ff, 500, 3000);
 
-const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 2000);
-let cameraAngleX = 0; 
-let cameraAngleY = 0; 
-
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 5000);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('canvas-container').appendChild(renderer.domElement);
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-scene.add(ambientLight);
-const dirLight = new THREE.DirectionalLight(0xfff4e6, 1.2);
-dirLight.position.set(100, 200, 50);
-dirLight.castShadow = true;
-scene.add(dirLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(100, 500, 100);
+sun.castShadow = true;
+scene.add(sun);
 
+// --- 変数管理 ---
 let playerModel, mixer;
 const actions = {};
 let currentAction = null;
 const clock = new THREE.Clock();
 
 const input = { up: false, down: false, left: false, right: false, a: false, b: false };
-let playerState = 'ground'; 
-
-const velocity = new THREE.Vector3();
-const gravity = -20.0; 
-const reelAcceleration = 100.0; // 巻き取りの爽快感をさらにアップ
+const player = {
+    pos: new THREE.Vector3(0, 50, 0),
+    vel: new THREE.Vector3(0, 0, 0),
+    yaw: 0,   // 左右視点
+    pitch: 0, // 上下視点
+    state: 'air',
+    grapplePoint: null
+};
 
 const buildings = [];
-let grapplePoint = null;
 const raycaster = new THREE.Raycaster();
 const centerScreen = new THREE.Vector2(0, 0);
 
-// ワイヤーとアンカーのグラフィック設定
-const wireMaterial = new THREE.LineBasicMaterial({ color: 0x222222, linewidth: 2 });
-const wireGeometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-const wire = new THREE.Line(wireGeometry, wireMaterial);
-wire.visible = false;
-scene.add(wire);
+// ワイヤーの可視化
+const wireGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const wireLine = new THREE.Line(wireGeom, new THREE.LineBasicMaterial({ color: 0x333333 }));
+wireLine.visible = false;
+scene.add(wireLine);
 
-const anchorGeometry = new THREE.ConeGeometry(0.3, 1.0, 8);
-const anchorMaterial = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.8, roughness: 0.2 });
-const anchor = new THREE.Mesh(anchorGeometry, anchorMaterial);
-anchor.rotation.x = Math.PI / 2;
-anchor.visible = false;
-scene.add(anchor);
-
-// スマホUIのタッチイベント設定
-function setupTouchButton(id, key) {
-    const btn = document.getElementById(id);
-    if(!btn) return;
-    btn.addEventListener('touchstart', (e) => { e.preventDefault(); input[key] = true; });
-    btn.addEventListener('touchend', (e) => { e.preventDefault(); input[key] = false; });
-    btn.addEventListener('mousedown', (e) => { e.preventDefault(); input[key] = true; });
-    btn.addEventListener('mouseup', (e) => { e.preventDefault(); input[key] = false; });
-    btn.addEventListener('mouseleave', (e) => { e.preventDefault(); input[key] = false; });
+// --- 入力イベント ---
+function bind(id, key) {
+    const el = document.getElementById(id);
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); input[key] = true; });
+    el.addEventListener('touchend', (e) => { e.preventDefault(); input[key] = false; });
+    el.addEventListener('mousedown', () => input[key] = true);
+    el.addEventListener('mouseup', () => input[key] = false);
 }
-['up','down','left','right','a','b'].forEach(key => setupTouchButton(`btn-${key}`, key));
+['up','down','left','right','btn-a','btn-b'].forEach(id => {
+    const key = id.replace('btn-', '');
+    bind(id, key);
+});
 
-// ★画面タップでアンカー射出
-const canvasContainer = document.getElementById('canvas-container');
-canvasContainer.addEventListener('mousedown', shootAnchor);
-canvasContainer.addEventListener('touchstart', (e) => {
-    if(e.target.tagName === 'CANVAS') shootAnchor();
-}, { passive: true });
+// 画面中央をタップで射出
+document.getElementById('canvas-container').addEventListener('touchstart', (e) => {
+    if (e.target.tagName === 'CANVAS') shootWire();
+});
+document.getElementById('canvas-container').addEventListener('mousedown', shootWire);
 
-function shootAnchor() {
-    if (playerState === 'swinging' || buildings.length === 0 || !playerModel) return;
-    
+function shootWire() {
+    if (player.state === 'swinging') return;
     raycaster.setFromCamera(centerScreen, camera);
-    const intersects = raycaster.intersectObjects(buildings, true);
-    
-    if (intersects.length > 0) {
-        grapplePoint = intersects[0].point;
-        playerState = 'swinging';
-        
-        anchor.position.copy(grapplePoint);
-        if(intersects[0].face) {
-            const normal = intersects[0].face.normal.clone().transformDirection(intersects[0].object.matrixWorld);
-            const lookTarget = grapplePoint.clone().add(normal);
-            anchor.lookAt(lookTarget);
-        }
-        anchor.visible = true;
-        wire.visible = true;
-
-        fadeToAction('Shoot', 0.1);
+    const hits = raycaster.intersectObjects(buildings, true);
+    if (hits.length > 0) {
+        player.grapplePoint = hits[0].point;
+        player.state = 'swinging';
+        wireLine.visible = true;
     }
 }
 
-function showError(msg) {
-    if (uiError) uiError.innerText += msg + "\n";
-}
-
+// --- モデル読み込み ---
 const loader = new GLTFLoader();
-let loadedCount = 0;
-
-function checkLoadComplete() {
-    loadedCount++;
-    if (loadedCount >= 2 && uiLoading) uiLoading.style.display = 'none';
-}
-
-function fadeToAction(name, duration = 0.2) {
-    if (!actions[name] || currentAction === actions[name]) return;
-    const previousAction = currentAction;
-    currentAction = actions[name];
-    if (previousAction) previousAction.fadeOut(duration);
-    currentAction.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(duration).play();
-}
-
 loader.load('peoplemodel.glb', (gltf) => {
     playerModel = gltf.scene;
     playerModel.scale.set(1, 1, 1);
-    playerModel.position.set(0, 0, 0);
-    
-    playerModel.traverse((child) => {
-        if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
-    });
     scene.add(playerModel);
-
     mixer = new THREE.AnimationMixer(playerModel);
-    gltf.animations.forEach((clip) => { actions[clip.name] = mixer.clipAction(clip); });
-
-    if (actions['mixamo.com']) {
-        actions['Idle'] = actions['mixamo.com'];
-    } else if (gltf.animations.length > 0) {
-        actions['Idle'] = actions[gltf.animations[0].name];
-    }
-    fadeToAction('Idle');
-    checkLoadComplete();
-}, undefined, (error) => {
-    showError("キャラモデルの読み込みに失敗しました。");
+    gltf.animations.forEach(clip => {
+        // 名前が不明な場合はインデックス等で判別
+        actions[clip.name] = mixer.clipAction(clip);
+    });
+    document.getElementById('loading').style.display = 'none';
 });
 
-const geometry = new THREE.BoxGeometry(15, 100, 15);
-const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
-for (let i = 0; i < 25; i++) {
-    const building = new THREE.Mesh(geometry, material);
-    building.position.set((Math.random() - 0.5) * 200, 50, (Math.random() - 0.5) * 200 - 30);
-    building.castShadow = true;
-    building.receiveShadow = true;
-    scene.add(building);
-    buildings.push(building);
-}
-
-const groundGeo = new THREE.PlaneGeometry(500, 500);
-const groundMat = new THREE.MeshStandardMaterial({ color: 0x556B2F });
-const ground = new THREE.Mesh(groundGeo, groundMat);
-ground.rotation.x = -Math.PI / 2;
+// テスト用：地面と高い塔の生成
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), new THREE.MeshStandardMaterial({color: 0x556b2f}));
+ground.rotation.x = -Math.PI/2;
 ground.receiveShadow = true;
 scene.add(ground);
-checkLoadComplete();
 
-function detachWire() {
-    grapplePoint = null;
-    playerState = 'air';
-    wire.visible = false;
-    anchor.visible = false;
+for(let i=0; i<15; i++) {
+    const h = 50 + Math.random() * 100;
+    const box = new THREE.Mesh(new THREE.BoxGeometry(20, h, 20), new THREE.MeshStandardMaterial({color: 0x8b4513}));
+    box.position.set((Math.random()-0.5)*400, h/2, (Math.random()-0.5)*400);
+    scene.add(box);
+    buildings.push(box);
 }
 
-// メインループ
+// --- メインループ ---
 function animate() {
     requestAnimationFrame(animate);
-    const delta = Math.min(clock.getDelta(), 0.1);
-
-    if (mixer) mixer.update(delta);
+    const dt = Math.min(clock.getDelta(), 0.03);
 
     if (playerModel) {
-        // ★十字キーは「視点（カメラ）の回転」のみに専念
-        const rotSpeed = 2.0 * delta;
-        if (input.left) cameraAngleX -= rotSpeed;
-        if (input.right) cameraAngleX += rotSpeed;
-        if (input.up) cameraAngleY += rotSpeed;
-        if (input.down) cameraAngleY -= rotSpeed;
-        
-        cameraAngleY = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, cameraAngleY));
+        // 1. 視点操作（十字キー）
+        const rotSpeed = 2.0 * dt;
+        if (input.left) player.yaw += rotSpeed;
+        if (input.right) player.yaw -= rotSpeed;
+        if (input.up) player.pitch += rotSpeed;
+        if (input.down) player.pitch -= rotSpeed;
+        player.pitch = Math.max(-1.2, Math.min(1.2, player.pitch));
 
-        velocity.y += gravity * delta; 
+        // 2. 物理演算
+        player.vel.y -= 15.0 * dt; // 重力
 
-        if (playerState === 'swinging' && grapplePoint) {
-            const toAnchor = new THREE.Vector3().subVectors(grapplePoint, playerModel.position);
-            const distanceToAnchor = toAnchor.length();
-            const direction = toAnchor.normalize();
+        if (player.state === 'swinging' && player.grapplePoint) {
+            const toAnchor = new THREE.Vector3().subVectors(player.grapplePoint, player.pos);
+            const dist = toAnchor.length();
+            const dir = toAnchor.normalize();
 
-            // ★Aボタンで巻き取り加速
+            // Aボタンで巻き取り加速
             if (input.a) {
-                velocity.add(direction.multiplyScalar(reelAcceleration * delta));
-                fadeToAction('Reel', 0.2);
-            } else {
-                const dot = velocity.dot(direction);
-                if (dot < 0) {
-                    velocity.sub(direction.multiplyScalar(dot));
-                }
-                fadeToAction('Fall', 0.2);
+                player.vel.add(dir.multiplyScalar(80 * dt));
             }
-
-            playerModel.lookAt(grapplePoint);
-
-            const waistPosition = playerModel.position.clone().add(new THREE.Vector3(0, 1.0, 0));
-            wireGeometry.setFromPoints([waistPosition, grapplePoint]);
-
-            // ★Bボタンでアンカー解放（パージ）
+            
+            // Bボタンで解放
             if (input.b) {
-                detachWire();
-                input.b = false;
+                player.state = 'air';
+                player.grapplePoint = null;
+                wireLine.visible = false;
             }
 
-            if (distanceToAnchor < 2.5) {
-                detachWire();
-            }
-            
-        } else if (playerState === 'air') {
-            velocity.x *= 0.99;
-            velocity.z *= 0.99;
-            fadeToAction('Fall', 0.2);
-            
-            const camDir = new THREE.Vector3().subVectors(playerModel.position, camera.position);
-            camDir.y = 0;
-            playerModel.lookAt(playerModel.position.clone().add(camDir.normalize()));
+            // ワイヤー描画
+            wireGeom.setFromPoints([player.pos.clone().add(new THREE.Vector3(0,1,0)), player.grapplePoint]);
         }
 
-        // キャラクターの移動は物理演算（慣性・重力・巻き取り）のみで行う
-        playerModel.position.addScaledVector(velocity, delta);
-
-        if (playerModel.position.y <= 0) {
-            playerModel.position.y = 0;
-            velocity.x *= 0.8; 
-            velocity.z *= 0.8;
-            if (Math.abs(velocity.y) < 1) velocity.y = 0;
-
-            if (playerState !== 'ground') {
-                playerState = 'ground';
-                detachWire();
-                fadeToAction('Idle', 0.2);
-            }
+        player.pos.addScaledVector(player.vel, dt);
+        if (player.pos.y < 0) {
+            player.pos.y = 0;
+            player.vel.set(0,0,0);
+            player.state = 'ground';
+            player.grapplePoint = null;
+            wireLine.visible = false;
         }
 
-        // TPSカメラの座標更新
-        const distance = 8; 
-        const heightOffset = 2;
-        
-        const offsetX = distance * Math.sin(cameraAngleX) * Math.cos(cameraAngleY);
-        const offsetY = distance * Math.sin(cameraAngleY) + heightOffset;
-        const offsetZ = distance * Math.cos(cameraAngleX) * Math.cos(cameraAngleY);
+        // 3. モデル同期
+        playerModel.position.copy(player.pos);
+        playerModel.rotation.y = player.yaw;
 
-        const targetCameraPos = playerModel.position.clone().add(new THREE.Vector3(offsetX, offsetY, offsetZ));
+        // 4. カメラ制御 (TPS)
+        const camDist = 10;
+        const targetCamPos = new THREE.Vector3(
+            player.pos.x + Math.sin(player.yaw) * camDist,
+            player.pos.y + 4 + Math.sin(player.pitch) * 5,
+            player.pos.z + Math.cos(player.yaw) * camDist
+        );
+        camera.position.lerp(targetCamPos, 0.1);
+        camera.lookAt(player.pos.clone().add(new THREE.Vector3(0, 2, 0)));
         
-        camera.position.lerp(targetCameraPos, 0.2);
-        const lookTarget = playerModel.position.clone().add(new THREE.Vector3(0, 2, 0));
-        camera.lookAt(lookTarget);
+        // HUD更新
+        document.getElementById('hud').innerHTML = `H: ${Math.floor(player.pos.y)}<br>S: ${Math.floor(player.vel.length()*10)}<br>WIRE: ${player.state === 'swinging' ? 'ON' : 'OFF'}`;
     }
 
+    if (mixer) mixer.update(dt);
     renderer.render(scene, camera);
 }
 
 animate();
-
-window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-});
