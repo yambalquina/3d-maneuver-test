@@ -6,12 +6,11 @@ const uiError = document.getElementById('error-log');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x8DB2D6);
-scene.fog = new THREE.FogExp2(0x8DB2D6, 0.003); // フォグを少し薄くして遠くを見やすく
+scene.fog = new THREE.FogExp2(0x8DB2D6, 0.003); 
 
-// 視野角を広め(80)にしてスピード感を強調
 const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 2000);
-let cameraAngleX = 0; // カメラの横回転（十字キー左右）
-let cameraAngleY = 0; // カメラの縦回転（十字キー上下）
+let cameraAngleX = 0; 
+let cameraAngleY = 0; 
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -31,19 +30,35 @@ const actions = {};
 let currentAction = null;
 const clock = new THREE.Clock();
 
-// UI入力状態の管理
 const input = { up: false, down: false, left: false, right: false, a: false, b: false };
-let playerState = 'ground'; // 'ground', 'air', 'swinging'
+let playerState = 'ground'; 
 
-// 物理演算用のパラメータ
 const velocity = new THREE.Vector3();
-const gravity = -20.0; // 落下速度（少し強め）
-const reelAcceleration = 80.0; // Aボタン押しっぱなし時の巻き取り加速力
+const gravity = -20.0; 
+const reelAcceleration = 80.0; 
 
 const buildings = [];
 let grapplePoint = null;
 const raycaster = new THREE.Raycaster();
 const centerScreen = new THREE.Vector2(0, 0);
+
+// ==========================================
+// ★追加：ワイヤーとアンカーのグラフィック設定
+// ==========================================
+// ワイヤー（線）の作成
+const wireMaterial = new THREE.LineBasicMaterial({ color: 0x333333, linewidth: 2 });
+const wireGeometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+const wire = new THREE.Line(wireGeometry, wireMaterial);
+wire.visible = false; // 最初は非表示
+scene.add(wire);
+
+// アンカー（金属の杭）の作成
+const anchorGeometry = new THREE.ConeGeometry(0.3, 1.0, 8);
+const anchorMaterial = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.8, roughness: 0.2 });
+const anchor = new THREE.Mesh(anchorGeometry, anchorMaterial);
+anchor.rotation.x = Math.PI / 2; // 先端を前へ向ける
+anchor.visible = false; // 最初は非表示
+scene.add(anchor);
 
 // ==========================================
 // スマホUIのタッチイベント設定
@@ -59,16 +74,14 @@ function setupTouchButton(id, key) {
 }
 ['up','down','left','right','a','b'].forEach(key => setupTouchButton(`btn-${key}`, key));
 
-// ★追加：画面のどこかをタップ（クリック）でアンカー射出
 const canvasContainer = document.getElementById('canvas-container');
 canvasContainer.addEventListener('mousedown', shootAnchor);
 canvasContainer.addEventListener('touchstart', (e) => {
-    // UIボタン上のタッチと区別するため、画面自体のタッチのみを拾う
     if(e.target.tagName === 'CANVAS') shootAnchor();
 }, { passive: true });
 
 function shootAnchor() {
-    if (playerState === 'swinging' || buildings.length === 0) return;
+    if (playerState === 'swinging' || buildings.length === 0 || !playerModel) return;
     
     raycaster.setFromCamera(centerScreen, camera);
     const intersects = raycaster.intersectObjects(buildings, true);
@@ -76,6 +89,18 @@ function shootAnchor() {
     if (intersects.length > 0) {
         grapplePoint = intersects[0].point;
         playerState = 'swinging';
+        
+        // ★アンカーの表示と配置
+        anchor.position.copy(grapplePoint);
+        // アンカーを壁の法線（垂直）方向に刺さるように向ける
+        if(intersects[0].face) {
+            const normal = intersects[0].face.normal.clone().transformDirection(intersects[0].object.matrixWorld);
+            const lookTarget = grapplePoint.clone().add(normal);
+            anchor.lookAt(lookTarget);
+        }
+        anchor.visible = true;
+        wire.visible = true;
+
         fadeToAction('Shoot', 0.1);
     }
 }
@@ -107,11 +132,13 @@ function fadeToAction(name, duration = 0.2) {
     currentAction.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(duration).play();
 }
 
-// ① キャラクター
 loader.load('peoplemodel.glb', (gltf) => {
     playerModel = gltf.scene;
+    
+    // ★キャラクターを元のサイズ（1倍）で読み込む
     playerModel.scale.set(1, 1, 1);
     playerModel.position.set(0, 0, 0);
+    
     playerModel.traverse((child) => {
         if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
     });
@@ -134,7 +161,6 @@ loader.load('peoplemodel.glb', (gltf) => {
     showError("キャラモデルの読み込みに失敗しました。");
 });
 
-// ② テスト用の的（ビル群）の自動生成
 const geometry = new THREE.BoxGeometry(10, 80, 10);
 const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
 for (let i = 0; i < 20; i++) {
@@ -154,6 +180,14 @@ ground.receiveShadow = true;
 scene.add(ground);
 checkLoadComplete();
 
+// ワイヤーを解除する処理
+function detachWire() {
+    grapplePoint = null;
+    playerState = 'air';
+    wire.visible = false;
+    anchor.visible = false;
+}
+
 // ==========================================
 // メインループ（物理演算とカメラ）
 // ==========================================
@@ -165,31 +199,26 @@ function animate() {
 
     if (playerModel) {
         
-        // --- 1. 十字キーによる視点（カメラ）の回転 ---
         const rotSpeed = 2.0 * delta;
         if (input.left) cameraAngleX -= rotSpeed;
         if (input.right) cameraAngleX += rotSpeed;
         if (input.up) cameraAngleY += rotSpeed;
         if (input.down) cameraAngleY -= rotSpeed;
         
-        // 上下の首振りを制限（真上や真下を向きすぎないように）
         cameraAngleY = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, cameraAngleY));
 
-        // --- 2. 物理演算とワイヤーアクション ---
-        velocity.y += gravity * delta; // 常に重力がかかる
+        velocity.y += gravity * delta; 
 
         if (playerState === 'swinging' && grapplePoint) {
-            // アンカーポイントへのベクトルと距離
             const toAnchor = new THREE.Vector3().subVectors(grapplePoint, playerModel.position);
             const distanceToAnchor = toAnchor.length();
             const direction = toAnchor.normalize();
 
-            // Aボタンを押している間、ワイヤーを巻き取って猛加速
+            // Aボタンで巻き取り
             if (input.a) {
                 velocity.add(direction.multiplyScalar(reelAcceleration * delta));
                 fadeToAction('Reel', 0.2);
             } else {
-                // 押していない時は、振り子のように遠心力を抑えるテンションをかける
                 const dot = velocity.dot(direction);
                 if (dot < 0) {
                     velocity.sub(direction.multiplyScalar(dot));
@@ -197,66 +226,60 @@ function animate() {
                 fadeToAction('Fall', 0.2);
             }
 
-            // キャラクターをアンカーポイントに向かせる
             playerModel.lookAt(grapplePoint);
 
-            // Bボタンでアンカーパージ（解放して空へ飛ぶ）
+            // ★追加：ワイヤーの描画更新
+            // キャラクターの腰付近（Y軸+1.0の高さ）からアンカーまで線を引く
+            const waistPosition = playerModel.position.clone().add(new THREE.Vector3(0, 1.0, 0));
+            wireGeometry.setFromPoints([waistPosition, grapplePoint]);
+
+            // Bボタンでパージ
             if (input.b) {
-                grapplePoint = null;
-                playerState = 'air';
+                detachWire();
                 input.b = false;
             }
 
-            // ビルに激突する寸前で自動的にワイヤーを外す
+            // 近づきすぎたらパージ
             if (distanceToAnchor < 2.5) {
-                grapplePoint = null;
-                playerState = 'air';
+                detachWire();
             }
             
         } else if (playerState === 'air') {
-            // 空中での空気抵抗（これがないと永遠に加速し続けてしまうため）
             velocity.x *= 0.99;
             velocity.z *= 0.99;
             fadeToAction('Fall', 0.2);
             
-            // 空中ではカメラの向いている方向を向かせる
             const camDir = new THREE.Vector3().subVectors(playerModel.position, camera.position);
             camDir.y = 0;
             playerModel.lookAt(playerModel.position.clone().add(camDir.normalize()));
         }
 
-        // 座標の更新
         playerModel.position.addScaledVector(velocity, delta);
 
-        // --- 3. 地面との衝突判定 ---
         if (playerModel.position.y <= 0) {
             playerModel.position.y = 0;
-            velocity.x *= 0.8; // 着地時の摩擦
+            velocity.x *= 0.8; 
             velocity.z *= 0.8;
             if (Math.abs(velocity.y) < 1) velocity.y = 0;
 
             if (playerState !== 'ground') {
                 playerState = 'ground';
-                grapplePoint = null;
+                detachWire();
                 fadeToAction('Idle', 0.2);
             }
         }
 
-        // --- 4. TPSカメラの座標更新 ---
-        const distance = 8; // カメラとキャラの距離
+        // --- TPSカメラの座標更新 ---
+        const distance = 8; 
         const heightOffset = 2;
         
-        // 回転角からカメラの相対位置を計算
         const offsetX = distance * Math.sin(cameraAngleX) * Math.cos(cameraAngleY);
         const offsetY = distance * Math.sin(cameraAngleY) + heightOffset;
         const offsetZ = distance * Math.cos(cameraAngleX) * Math.cos(cameraAngleY);
 
         const targetCameraPos = playerModel.position.clone().add(new THREE.Vector3(offsetX, offsetY, offsetZ));
         
-        // 滑らかに追従
         camera.position.lerp(targetCameraPos, 0.2);
-        
-        // 常にキャラクターの少し上を見つめる
         const lookTarget = playerModel.position.clone().add(new THREE.Vector3(0, 2, 0));
         camera.lookAt(lookTarget);
     }
