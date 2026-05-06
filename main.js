@@ -54,7 +54,7 @@ const mouse = new THREE.Vector2();
 const loader = new GLTFLoader();
 
 // ① キャラクターの読み込み
-loader.load('character.glb', (gltf) => { // ※実際のファイルパスに変更してください
+loader.load('peoplemodel.glb', (gltf) => { // ※実際のファイルパスに変更してください
     playerModel = gltf.scene;
     playerModel.position.set(0, 10, 0); // 初期位置は少し空中
     scene.add(playerModel);
