@@ -2,17 +2,69 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Maneuver Gear Simulator - Test</title>
+    <!-- スマホでの拡大縮小を禁止し、アプリのように動作させる -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Maneuver Simulator</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #87CEEB; }
-        canvas { display: block; }
-        #ui { position: absolute; top: 10px; left: 10px; color: white; font-family: sans-serif; text-shadow: 1px 1px 2px black; }
+        body { margin: 0; overflow: hidden; background-color: #8DB2D6; touch-action: none; /* スワイプで画面が動くのを防ぐ */ font-family: sans-serif; }
+        #game-container { position: relative; width: 100vw; height: 100vh; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        /* UI全体を覆う透明なレイヤー */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        /* 照準（クロスヘア） */
+        .crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 30px; height: 30px; font-size: 30px; color: black; text-align: center; line-height: 30px; font-weight: 100; }
+
+        /* ボタンの共通設定 */
+        .touch-btn { pointer-events: auto; user-select: none; background: rgba(255, 255, 255, 0.8); border-radius: 15px; font-weight: bold; font-size: 24px; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .touch-btn:active { background: rgba(200, 200, 200, 0.9); transform: scale(0.95); }
+
+        /* 十字キー（左下） */
+        .dpad { position: absolute; bottom: 30px; left: 20px; width: 160px; height: 160px; }
+        .btn-up { position: absolute; top: 0; left: 55px; width: 50px; height: 50px; }
+        .btn-down { position: absolute; bottom: 0; left: 55px; width: 50px; height: 50px; }
+        .btn-left { position: absolute; top: 55px; left: 0; width: 50px; height: 50px; }
+        .btn-right { position: absolute; top: 55px; right: 0; width: 50px; height: 50px; }
+
+        /* アクションボタン（右下） */
+        .actions { position: absolute; bottom: 30px; right: 20px; width: 150px; height: 150px; }
+        .btn-a { position: absolute; top: 10px; right: 10px; width: 65px; height: 65px; border-radius: 50%; }
+        .btn-b { position: absolute; bottom: 10px; left: 10px; width: 65px; height: 65px; border-radius: 50%; }
+
+        /* ローディング画面（エラー確認用） */
+        #loading { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #222; color: white; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 999; }
+        #loading-text { font-size: 20px; margin-bottom: 10px; }
+        #error-log { color: #ff6b6b; font-size: 14px; max-width: 80%; text-align: center; }
     </style>
 </head>
 <body>
-    <div id="ui">WASD: 移動 | Space: ジャンプ | クリック: ワイヤー射出</div>
-    <!-- Three.jsやGLTFLoaderをCDNから読み込む想定 -->
+    <div id="game-container">
+        <!-- 3D描画エリア -->
+        <div id="canvas-container"></div>
+
+        <!-- UIレイヤー -->
+        <div id="ui-layer">
+            <div class="crosshair">＋</div>
+            <div class="dpad">
+                <div id="btn-up" class="touch-btn btn-up">↑</div>
+                <div id="btn-down" class="touch-btn btn-down">↓</div>
+                <div id="btn-left" class="touch-btn btn-left">←</div>
+                <div id="btn-right" class="touch-btn btn-right">→</div>
+            </div>
+            <div class="actions">
+                <div id="btn-a" class="touch-btn btn-a">A</div>
+                <div id="btn-b" class="touch-btn btn-b">B</div>
+            </div>
+        </div>
+
+        <!-- 読み込み画面 -->
+        <div id="loading">
+            <div id="loading-text">モデル読み込み中...</div>
+            <div id="error-log"></div>
+        </div>
+    </div>
+
     <script type="importmap">
         {
             "imports": {
