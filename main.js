@@ -110,7 +110,7 @@ function fadeToAction(name, duration = 0.2) {
 // ① キャラクター
 loader.load('peoplemodel.glb', (gltf) => {
     playerModel = gltf.scene;
-    playerModel.scale.set(0.01, 0.01, 0.01);
+    playerModel.scale.set(1, 1, 1);
     playerModel.position.set(0, 0, 0);
     playerModel.traverse((child) => {
         if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
