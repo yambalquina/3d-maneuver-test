@@ -1,174 +1,80 @@
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-
-// --- 初期設定 ---
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x8ed0ff);
-scene.fog = new THREE.Fog(0xbfe6ff, 500, 3000);
-
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 5000);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.shadowMap.enabled = true;
-document.getElementById('canvas-container').appendChild(renderer.domElement);
-
-scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-sun.position.set(100, 500, 100);
-sun.castShadow = true;
-scene.add(sun);
-
-// --- 変数管理 ---
-let playerModel, mixer;
-const actions = {};
-let currentAction = null;
-const clock = new THREE.Clock();
-
-const input = { up: false, down: false, left: false, right: false, a: false, b: false };
-const player = {
-    pos: new THREE.Vector3(0, 50, 0),
-    vel: new THREE.Vector3(0, 0, 0),
-    yaw: 0,   // 左右視点
-    pitch: 0, // 上下視点
-    state: 'air',
-    grapplePoint: null
-};
-
-const buildings = [];
-const raycaster = new THREE.Raycaster();
-const centerScreen = new THREE.Vector2(0, 0);
-
-// ワイヤーの可視化
-const wireGeom = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-const wireLine = new THREE.Line(wireGeom, new THREE.LineBasicMaterial({ color: 0x333333 }));
-wireLine.visible = false;
-scene.add(wireLine);
-
-// --- 入力イベント ---
-function bind(id, key) {
-    const el = document.getElementById(id);
-    el.addEventListener('touchstart', (e) => { e.preventDefault(); input[key] = true; });
-    el.addEventListener('touchend', (e) => { e.preventDefault(); input[key] = false; });
-    el.addEventListener('mousedown', () => input[key] = true);
-    el.addEventListener('mouseup', () => input[key] = false);
-}
-['up','down','left','right','btn-a','btn-b'].forEach(id => {
-    const key = id.replace('btn-', '');
-    bind(id, key);
-});
-
-// 画面中央をタップで射出
-document.getElementById('canvas-container').addEventListener('touchstart', (e) => {
-    if (e.target.tagName === 'CANVAS') shootWire();
-});
-document.getElementById('canvas-container').addEventListener('mousedown', shootWire);
-
-function shootWire() {
-    if (player.state === 'swinging') return;
-    raycaster.setFromCamera(centerScreen, camera);
-    const hits = raycaster.intersectObjects(buildings, true);
-    if (hits.length > 0) {
-        player.grapplePoint = hits[0].point;
-        player.state = 'swinging';
-        wireLine.visible = true;
-    }
-}
-
-// --- モデル読み込み ---
-const loader = new GLTFLoader();
-loader.load('peoplemodel.glb', (gltf) => {
-    playerModel = gltf.scene;
-    playerModel.scale.set(1, 1, 1);
-    scene.add(playerModel);
-    mixer = new THREE.AnimationMixer(playerModel);
-    gltf.animations.forEach(clip => {
-        // 名前が不明な場合はインデックス等で判別
-        actions[clip.name] = mixer.clipAction(clip);
-    });
-    document.getElementById('loading').style.display = 'none';
-});
-
-// テスト用：地面と高い塔の生成
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), new THREE.MeshStandardMaterial({color: 0x556b2f}));
-ground.rotation.x = -Math.PI/2;
-ground.receiveShadow = true;
-scene.add(ground);
-
-for(let i=0; i<15; i++) {
-    const h = 50 + Math.random() * 100;
-    const box = new THREE.Mesh(new THREE.BoxGeometry(20, h, 20), new THREE.MeshStandardMaterial({color: 0x8b4513}));
-    box.position.set((Math.random()-0.5)*400, h/2, (Math.random()-0.5)*400);
-    scene.add(box);
-    buildings.push(box);
-}
-
-// --- メインループ ---
-function animate() {
-    requestAnimationFrame(animate);
-    const dt = Math.min(clock.getDelta(), 0.03);
-
-    if (playerModel) {
-        // 1. 視点操作（十字キー）
-        const rotSpeed = 2.0 * dt;
-        if (input.left) player.yaw += rotSpeed;
-        if (input.right) player.yaw -= rotSpeed;
-        if (input.up) player.pitch += rotSpeed;
-        if (input.down) player.pitch -= rotSpeed;
-        player.pitch = Math.max(-1.2, Math.min(1.2, player.pitch));
-
-        // 2. 物理演算
-        player.vel.y -= 15.0 * dt; // 重力
-
-        if (player.state === 'swinging' && player.grapplePoint) {
-            const toAnchor = new THREE.Vector3().subVectors(player.grapplePoint, player.pos);
-            const dist = toAnchor.length();
-            const dir = toAnchor.normalize();
-
-            // Aボタンで巻き取り加速
-            if (input.a) {
-                player.vel.add(dir.multiplyScalar(80 * dt));
-            }
-            
-            // Bボタンで解放
-            if (input.b) {
-                player.state = 'air';
-                player.grapplePoint = null;
-                wireLine.visible = false;
-            }
-
-            // ワイヤー描画
-            wireGeom.setFromPoints([player.pos.clone().add(new THREE.Vector3(0,1,0)), player.grapplePoint]);
-        }
-
-        player.pos.addScaledVector(player.vel, dt);
-        if (player.pos.y < 0) {
-            player.pos.y = 0;
-            player.vel.set(0,0,0);
-            player.state = 'ground';
-            player.grapplePoint = null;
-            wireLine.visible = false;
-        }
-
-        // 3. モデル同期
-        playerModel.position.copy(player.pos);
-        playerModel.rotation.y = player.yaw;
-
-        // 4. カメラ制御 (TPS)
-        const camDist = 10;
-        const targetCamPos = new THREE.Vector3(
-            player.pos.x + Math.sin(player.yaw) * camDist,
-            player.pos.y + 4 + Math.sin(player.pitch) * 5,
-            player.pos.z + Math.cos(player.yaw) * camDist
-        );
-        camera.position.lerp(targetCamPos, 0.1);
-        camera.lookAt(player.pos.clone().add(new THREE.Vector3(0, 2, 0)));
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>3D Maneuver Gear - Pro</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #8DB2D6; font-family: sans-serif; user-select: none; -webkit-user-select: none; touch-action: none; }
+        #canvas-container { position: fixed; inset: 0; width: 100vw; height: 100vh; }
         
-        // HUD更新
-        document.getElementById('hud').innerHTML = `H: ${Math.floor(player.pos.y)}<br>S: ${Math.floor(player.vel.length()*10)}<br>WIRE: ${player.state === 'swinging' ? 'ON' : 'OFF'}`;
+        /* 画面中央の照準 */
+        .crosshair { position: fixed; left: 50%; top: 50%; width: 30px; height: 30px; transform: translate(-50%, -50%); z-index: 10; pointer-events: none; color: black; font-size: 30px; font-weight: 100; }
+
+        /* 上部ボタン */
+        .top-ui { position: fixed; top: 20px; left: 20px; right: 20px; display: flex; justify-content: space-between; z-index: 20; pointer-events: none; }
+        .system-btns { display: flex; gap: 10px; pointer-events: auto; }
+        .btn-small { background: rgba(255,255,255,0.9); border: none; border-radius: 8px; padding: 8px 12px; font-weight: bold; color: #3498db; font-size: 12px; }
+
+        /* ステータスパネル */
+        .status-panel { background: rgba(0,0,0,0.5); color: white; padding: 10px; border-radius: 10px; font-size: 12px; line-height: 1.4; text-align: right; pointer-events: none; }
+
+        /* 操作UI */
+        .controls { position: fixed; left: 5vw; right: 5vw; bottom: 40px; display: flex; justify-content: space-between; align-items: flex-end; z-index: 20; pointer-events: none; }
+        .dpad { display: grid; grid-template-columns: repeat(3, 55px); grid-template-rows: repeat(3, 55px); gap: 5px; pointer-events: auto; }
+        .action-btns { display: flex; flex-direction: column; gap: 15px; pointer-events: auto; }
+        
+        .btn { background: rgba(255,255,255,0.7); border: none; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #333; box-shadow: 0 4px #ccc; }
+        .btn:active { transform: translateY(2px); box-shadow: 0 2px #999; }
+        .btn-circle { width: 75px; height: 75px; border-radius: 50%; font-size: 28px; }
+
+        /* 底部デバッグ */
+        .debug-bar { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); width: 90%; background: rgba(0,0,0,0.8); color: #0f0; padding: 5px 10px; font-size: 10px; border-radius: 5px; display: flex; justify-content: space-between; z-index: 25; }
+
+        #loading { position: fixed; inset: 0; background: #000; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; }
+    </style>
+</head>
+<body>
+    <div id="loading"><div>LOADING 3D ASSETS...</div><div id="error-log"></div></div>
+    <div id="canvas-container"></div>
+    <div class="crosshair">＋</div>
+
+    <div class="top-ui">
+        <div class="system-btns">
+            <button class="btn-small" onclick="location.reload()">RESET</button>
+            <button class="btn-small">MANUAL</button>
+        </div>
+        <div class="status-panel" id="hud">
+            T: 0.00<br>H: 0<br>S: 0<br>WIRE: OFF
+        </div>
+    </div>
+
+    <div class="controls">
+        <div class="dpad">
+            <div style="grid-column:2"><button class="btn" style="width:55px;height:55px;" id="up">↑</button></div>
+            <div style="grid-column:1; grid-row:2"><button class="btn" style="width:55px;height:55px;" id="left">←</button></div>
+            <div style="grid-column:3; grid-row:2"><button class="btn" style="width:55px;height:55px;" id="right">→</button></div>
+            <div style="grid-column:2; grid-row:3"><button class="btn" style="width:55px;height:55px;" id="down">↓</button></div>
+        </div>
+        <div class="action-btns">
+            <button class="btn btn-circle" id="btn-a">A</button>
+            <button class="btn btn-circle" id="btn-b">B</button>
+        </div>
+    </div>
+
+    <div class="debug-bar">
+        <span id="debug-text">POS: 0, 0, 0 | VEL: 0</span>
+        <span>×</span>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
     }
-
-    if (mixer) mixer.update(dt);
-    renderer.render(scene, camera);
-}
-
-animate();
+    </script>
+    <script type="module" src="main.js"></script>
+</body>
+</html>
